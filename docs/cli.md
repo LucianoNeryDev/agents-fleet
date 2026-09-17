@@ -13,11 +13,19 @@ the installed binary.
   architecture; `show <architecture>/<fleet>` prints route details.
 - `use <fleet|architecture/fleet>` validates and persists a selection, then
   runs `opencode service restart`. Add `--no-restart` to skip it.
+- `doctor [directory]` performs read-only authoring and OpenCode V2 catalog
+  diagnostics. Add `--offline` to avoid subprocesses or `--json` for one
+  machine-readable report. See [Diagnostics](diagnostics.md).
 
 `--config` overrides the config root and `--state` overrides the state file.
 `OPENCODE_BIN` selects one executable path/name; it is passed directly to
 `spawnSync` with no shell. A failed restart does not roll back state and warns
 that the running service may be stale.
+
+Doctor exits `0` when requested checks complete without errors, `1` for
+completed diagnostics with errors, and `2` when requested live OpenCode checks
+cannot complete. Warnings do not make the command fail. `OPENCODE_BIN` applies
+to both restart and doctor, and is always invoked directly without a shell.
 
 Names are colored only for terminals. `NO_COLOR` wins over `FORCE_COLOR`; use
 `FORCE_COLOR=1` or `FORCE_COLOR=0` to override TTY detection. Architecture and

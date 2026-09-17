@@ -17,3 +17,9 @@ Tests use Node's built-in test runner and temporary roots. CLI tests must set a
 fake `OPENCODE_BIN` and must never restart a real service. Keep changes
 modular, update schemas/docs for public contract changes, and do not commit
 generated `dist/` or credentials.
+
+Compatibility tests must use fake V2 `agent.list`, `model.list`, and
+`provider.list` envelopes. Include malformed and partial responses, but assert
+that raw records and sensitive fixture fields never enter diagnostic reports.
+Use `agents-fleet doctor --offline` for local authoring checks that must not
+contact a running OpenCode service.

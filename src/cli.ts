@@ -7,6 +7,7 @@ import { configRoot } from "./paths.js"
 import { loadAllFleets, loadConfig, loadFleet } from "./loader.js"
 import { compileSnapshot } from "./runtime.js"
 import { selectState, writeState } from "./state.js"
+import { doctorExitCode, runDiagnostics, validateOpenCodeExecutable } from "./diagnostics.js"
 import type { Fleet, LoadedConfig, ResolvedArchitecture } from "./types.js"
 
 const HELP = `Usage: agents-fleet <command> [options]
@@ -18,11 +19,14 @@ Commands:
   list [architecture]                     List architectures and nested fleets
   show <architecture|fleet|architecture/fleet>  Show configuration details
   use <fleet|architecture/fleet> [--no-restart]  Persist selection and restart OpenCode
+  doctor [directory] [--offline] [--json]  Diagnose configuration and OpenCode catalogs
 
 Options:
   --config <directory>                     Configuration root override
   --state <file>                           State file override (for testing or isolation)
   --no-restart                             Do not restart after use
+  --offline                                Skip OpenCode subprocess checks (doctor)
+  --json                                   Emit one JSON doctor report (doctor)
 `
 
 const ANSI = { reset: "\x1b[0m", magenta: "\x1b[35m", cyan: "\x1b[36m", green: "\x1b[32m", yellow: "\x1b[33m", dim: "\x1b[2m" }
@@ -42,11 +46,13 @@ function selector(value: string, activeArchitecture: string): { architecture: st
   if (parts.length > 2 || parts.some((part) => !part)) throw new Error(`Invalid selector "${value}"; expected fleet or architecture/fleet`)
   return { architecture: parts.length === 2 ? parts[0] : activeArchitecture, fleet: parts.length === 2 ? parts[1] : parts[0] }
 }
-function optionArgs(args: string[]): { args: string[]; config?: string; state?: string; noRestart: boolean } {
-  const positional: string[] = []; let config: string | undefined; let state: string | undefined; let noRestart = false
+function optionArgs(args: string[]): { args: string[]; config?: string; state?: string; noRestart: boolean; offline: boolean; json: boolean } {
+  const positional: string[] = []; let config: string | undefined; let state: string | undefined; let noRestart = false; let offline = false; let json = false
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
     if (arg === "--no-restart") { noRestart = true; continue }
+    if (arg === "--offline") { offline = true; continue }
+    if (arg === "--json") { json = true; continue }
     if (arg === "--config" || arg === "--state") {
       const value = args[++index]
       if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`)
@@ -56,7 +62,7 @@ function optionArgs(args: string[]): { args: string[]; config?: string; state?: 
     if (arg.startsWith("--")) throw new Error(`Unknown option ${arg}`)
     positional.push(arg)
   }
-  return { args: positional, config, state, noRestart }
+  return { args: positional, config, state, noRestart, offline, json }
 }
 async function existing(path: string): Promise<boolean> { try { await stat(path); return true } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error } }
 async function copyWithoutOverwrite(from: string, to: string): Promise<void> {
@@ -125,8 +131,7 @@ async function showFleet(config: LoadedConfig, architecture: ResolvedArchitectur
   if (fleet.defaultChain) console.log(`${color("(default)", ANSI.cyan, enabled)}${color(": ", ANSI.dim, enabled)}${routeLabel(fleet.defaultChain, enabled)}`)
 }
 function restart(): void {
-  const executable = process.env.OPENCODE_BIN || "opencode"
-  if (!executable || /[\0\s]/.test(executable) || executable.startsWith("-")) throw new Error("OPENCODE_BIN must be one executable path/name, not a shell command")
+  const executable = validateOpenCodeExecutable()
   const result = spawnSync(executable, ["service", "restart"], { stdio: "inherit", shell: false })
   if (result.error) throw new Error(`OpenCode restart failed: ${result.error.message}`)
   if (result.status !== 0) throw new Error(`OpenCode restart failed with exit status ${result.status ?? "unknown"}`)
@@ -137,13 +142,29 @@ export async function run(argv = process.argv.slice(2)): Promise<void> {
   const parsed = optionArgs(argv.slice(1))
   if (["help", "--help", "-h"].includes(command)) { if (parsed.args.length) throw new Error("help does not accept arguments"); process.stdout.write(HELP); return }
   if (command === "init") { if (parsed.args.length > 1) throw new Error("init accepts at most one directory"); await init(parsed.args[0] ?? configRoot(parsed.config)); return }
-  const root = configRoot(parsed.config)
+  if (command === "doctor") {
+    if (parsed.args.length > 1) throw new Error("doctor accepts at most one directory")
+    const report = await runDiagnostics({ configRoot: parsed.args[0] ?? configRoot(parsed.config), statePath: parsed.state, offline: parsed.offline })
+    if (parsed.json) process.stdout.write(`${JSON.stringify(report)}\n`)
+    else {
+      console.log(`Doctor: ${report.complete ? (report.ok ? "OK" : "ERRORS") : "INCOMPLETE"}`)
+      if (report.selection) console.log(`Selection: ${report.selection.architecture}/${report.selection.fleet}`)
+      for (const item of report.diagnostics) {
+        console.log(`[${item.severity}] ${item.code}${item.location ? ` (${item.location})` : ""}: ${item.message}`)
+        if (item.hint) console.log(`  hint: ${item.hint}`)
+      }
+      console.log(`Summary: ${report.summary.error} error(s), ${report.summary.warning} warning(s), ${report.summary.info} info, ${report.summary.skipped} skipped.`)
+    }
+    process.exitCode = doctorExitCode(report)
+    return
+  }
   if (command === "validate") {
     if (parsed.args.length > 1) throw new Error("validate accepts at most one directory")
-    const config = await loadConfig(parsed.args[0] ?? root)
+    const config = await loadConfig(parsed.args[0] ?? configRoot(parsed.config))
     for (const id of config.architectures.keys()) await loadAllFleets(config, id)
     console.log(`Valid configuration: ${config.architectures.size} architecture(s)`); return
   }
+  const root = configRoot(parsed.config)
   const config = await loadConfig(root); const state = await selectState(config, parsed.state); const active = { architecture: state.architecture, fleet: state.fleet }
   if (command === "current") { if (parsed.args.length) throw new Error("current does not accept arguments"); console.log(`${active.architecture}/${active.fleet}`); return }
   if (command === "list") {

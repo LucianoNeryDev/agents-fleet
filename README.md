@@ -16,6 +16,7 @@ npm install
 npm run build
 node dist/cli.js init ./my-agents-fleet
 AGENTS_FLEET_HOME="$PWD/my-agents-fleet" node dist/cli.js validate
+AGENTS_FLEET_HOME="$PWD/my-agents-fleet" node dist/cli.js doctor --offline
 AGENTS_FLEET_HOME="$PWD/my-agents-fleet" node dist/cli.js list
 AGENTS_FLEET_HOME="$PWD/my-agents-fleet" node dist/cli.js use software-team/budget --no-restart
 ```
@@ -34,13 +35,16 @@ never manages credentials.
 
 Use `agents-fleet --help` for the complete CLI. Install the default OpenCode V2
 plugin from `dist/plugin.js` (or the package `agents-fleet/plugin`) in your
-OpenCode configuration. This pre-release is source-install oriented and is not
-published to npm. See [configuration](docs/configuration.md) and
+OpenCode configuration. The read-only `doctor` command validates authoring and
+can compare agents, providers, models, and variants with a running OpenCode V2
+service. This pre-release is source-install oriented and is not published to
+npm. See [configuration](docs/configuration.md),
+[diagnostics](docs/diagnostics.md), and
 [OpenCode integration](docs/opencode-integration.md).
 
 ## Links
 
-- [Concepts](docs/concepts.md) · [CLI](docs/cli.md) · [Security model](docs/architecture-security.md)
+- [Concepts](docs/concepts.md) · [CLI](docs/cli.md) · [Diagnostics](docs/diagnostics.md) · [Security model](docs/architecture-security.md)
 - [Contributing](CONTRIBUTING.md)
 - [Forgejo](https://git.lucianonery.dev/LucianoNeryDev/agents-fleet) ·
   [GitHub](https://github.com/LucianoNeryDev/agents-fleet) ·
