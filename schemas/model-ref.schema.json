@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://git.lucianonery.dev/LucianoNeryDev/agents-fleet/raw/branch/master/schemas/model-ref.schema.json",
+  "title": "OpenCode model reference",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["providerID", "modelID"],
+  "properties": {
+    "providerID": { "type": "string", "minLength": 1 },
+    "modelID": { "type": "string", "minLength": 1 },
+    "variant": { "type": "string", "minLength": 1 }
+  }
+}
