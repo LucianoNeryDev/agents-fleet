@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { spawnSync } from "node:child_process"
 import { configRoot } from "../paths.js"
-import { loadConfig, loadFleet } from "../loader.js"
+import { loadAllFleets, loadConfig, loadFleet } from "../loader.js"
 import { compileSnapshot, injectContext, handleRetry } from "../runtime.js"
 import { selectState, writeState } from "../state.js"
 import { validateArchitecture, validateChain, validateFleet } from "../validation.js"
@@ -19,7 +19,7 @@ const example = fileURLToPath(new URL("../../examples/software-team", import.met
 async function fixture(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "agents-fleet-")); await cp(example, root, { recursive: true }); return root
 }
-async function architecture(root: string): Promise<any> { return JSON.parse(await readFile(join(root, "architectures/software-team/architecture.json"), "utf8")) }
+async function architecture(root: string, id = "software-team"): Promise<any> { return JSON.parse(await readFile(join(root, `architectures/${id}/architecture.json`), "utf8")) }
 async function saveArchitecture(root: string, value: unknown): Promise<void> { await writeFile(join(root, "architectures/software-team/architecture.json"), JSON.stringify(value, null, 2)) }
 
 test("bundled example has valid exhaustive routes and chains", async () => {
@@ -28,6 +28,21 @@ test("bundled example has valid exhaustive routes and chains", async () => {
   assert.deepEqual(Object.keys(a.agents), ["build", "coder", "reviewer"])
   validateArchitecture(await architecture(root), config.managedAgentIDs)
   const fleet = await loadFleet(config, "software-team", "balanced"); validateFleet(fleet, new Set(["build", "coder", "reviewer"]))
+})
+
+test("free architecture uses one exact model route for every managed agent", async () => {
+  const root = await fixture(); const config = await loadConfig(root); const a = config.architectures.get("free")!
+  assert.deepEqual(Object.keys(a.agents), ["build", "coder", "reviewer"])
+  assert.deepEqual(Object.fromEntries(Object.entries(a.agents).map(([id, agent]) => [id, { enabled: agent.enabled, mode: agent.mode, routeSlot: agent.routeSlot, prompt: agent.prompt }])), {
+    build: { enabled: true, mode: "primary", routeSlot: "all", prompt: { mode: "preserve-static" } },
+    coder: { enabled: true, mode: "subagent", routeSlot: "all", prompt: { mode: "preserve-static" } },
+    reviewer: { enabled: true, mode: "subagent", routeSlot: "all", prompt: { mode: "preserve-static" } }
+  })
+  assert.deepEqual(a.contextSources, {})
+  const model = { providerID: "opencode", modelID: "muse-spark-1.3-contributor-free" }
+  const fleet = await loadFleet(config, "free", "free")
+  assert.deepEqual(fleet.chains, { all: [model] }); assert.deepEqual(fleet.defaultChain, [model])
+  validateArchitecture(await architecture(root, "free"), config.managedAgentIDs); validateFleet(fleet, new Set(["all"]))
 })
 
 test("agent steps are positive and prompt policies have matching shapes", () => {
@@ -61,7 +76,7 @@ test("path traversal and symlink escapes are rejected", async () => {
 
 test("state selection is deterministic, strict, atomic, and preserves architecture boundaries", async () => {
   const root = await fixture(); const config = await loadConfig(root); const statePath = join(root, "state/state.json")
-  const initial = await selectState(config, statePath); assert.deepEqual(initial, { version: 1, architecture: "software-team", fleet: "balanced", architectureActivatedAt: 0 })
+  const initial = await selectState(config, statePath); assert.deepEqual(initial, { version: 1, architecture: "free", fleet: "free", architectureActivatedAt: 0 })
   const setupSnapshot = await compileSnapshot(root, join(root, "setup-state.json"), 300); const restartedSnapshot = await compileSnapshot(root, join(root, "setup-state.json"), 400); assert.equal(setupSnapshot.state.architectureActivatedAt, 300); assert.equal(restartedSnapshot.state.architectureActivatedAt, 300)
   const first = await writeState(config, "software-team", "balanced", statePath, 100); const second = await writeState(config, "software-team", "budget", statePath, 200); assert.equal(second.architectureActivatedAt, first.architectureActivatedAt)
   assert.equal((await readFile(statePath, "utf8")).includes('"fleet": "budget"'), true)
@@ -75,7 +90,7 @@ test("prompt policies and context enforce one snapshot and session boundary", as
   applyAgentTransform(draft, snapshot); assert.equal(agents.get("build").system.startsWith("# Build agent"), true); assert.equal(agents.get("build").permissions.execute, "ask"); assert.equal(draft.selected, "build")
   const old = { sessionID: "s", agent: "build", system: [] as any[] }; await assert.rejects(injectContext(old, snapshot, { get: async () => ({ time: { created: 99 } }) }), /predates/)
   const current = { sessionID: "s", agent: "build", system: [] as any[] }; await injectContext(current, snapshot, { get: async () => ({ time: { created: 100 } }) }); assert.equal(current.system.length, 1)
-  const appendRoot = await fixture(); const appendValue = await architecture(appendRoot); appendValue.agents.build.prompt = { mode: "append", paths: ["prompts/build.md"] }; await saveArchitecture(appendRoot, appendValue); const appendSnapshot = await compileSnapshot(appendRoot, join(appendRoot, "append-state.json")); const appendAgent = new Map([["build", { id: "build", request: {}, mode: "primary", hidden: false, permissions: {}, system: "static system" }], ["coder", { id: "coder", request: {}, mode: "subagent", hidden: false, permissions: {} }], ["reviewer", { id: "reviewer", request: {}, mode: "subagent", hidden: false, permissions: {} }]]); const appendDraft: any = { get: (id: string) => appendAgent.get(id), update: (id: string, fn: (agent: any) => void) => fn(appendAgent.get(id)), remove: () => undefined, default: () => undefined }; applyAgentTransform(appendDraft, appendSnapshot); assert.match(appendAgent.get("build")!.system as string, /^static system\n\n# Build agent/)
+  const appendRoot = await fixture(); const appendValue = await architecture(appendRoot); appendValue.agents.build.prompt = { mode: "append", paths: ["prompts/build.md"] }; await saveArchitecture(appendRoot, appendValue); const appendStatePath = join(appendRoot, "append-state.json"); await writeState(await loadConfig(appendRoot), "software-team", "balanced", appendStatePath); const appendSnapshot = await compileSnapshot(appendRoot, appendStatePath); const appendAgent = new Map([["build", { id: "build", request: {}, mode: "primary", hidden: false, permissions: {}, system: "static system" }], ["coder", { id: "coder", request: {}, mode: "subagent", hidden: false, permissions: {} }], ["reviewer", { id: "reviewer", request: {}, mode: "subagent", hidden: false, permissions: {} }]]); const appendDraft: any = { get: (id: string) => appendAgent.get(id), update: (id: string, fn: (agent: any) => void) => fn(appendAgent.get(id)), remove: () => undefined, default: () => undefined }; applyAgentTransform(appendDraft, appendSnapshot); assert.match(appendAgent.get("build")!.system as string, /^static system\n\n# Build agent/)
 })
 
 test("plugin rejects missing enabled agents, removes disabled agents, and handles memory failures", async () => {
@@ -86,30 +101,39 @@ test("plugin rejects missing enabled agents, removes disabled agents, and handle
   const missing = new Map(agents); missing.delete("reviewer"); assert.throws(() => applyAgentTransform({ ...draft, get: (id: string) => missing.get(id) }, snapshot), /missing enabled agent/)
   const disabledRoot = await fixture(); const disabledValue = await architecture(disabledRoot); disabledValue.agents.coder = { enabled: false }; delete disabledValue.contextSources["coder-memory"]; await saveArchitecture(disabledRoot, disabledValue)
   for (const fleetID of ["balanced", "budget"]) { const fleetPath = join(disabledRoot, `architectures/software-team/fleets/${fleetID}.json`); const fleet = JSON.parse(await readFile(fleetPath, "utf8")); delete fleet.chains.coder; await writeFile(fleetPath, JSON.stringify(fleet, null, 2)) }
-  const disabledSnapshot = await compileSnapshot(disabledRoot, join(disabledRoot, "disabled-state.json")); const disabledAgents = new Map(agents); const disabledDraft: any = { get: (id: string) => disabledAgents.get(id), update: (id: string, fn: (agent: any) => void) => fn(disabledAgents.get(id)), remove: (id: string) => disabledAgents.delete(id), default: () => undefined }; applyAgentTransform(disabledDraft, disabledSnapshot); assert.equal(disabledAgents.has("coder"), false)
+  const disabledStatePath = join(disabledRoot, "disabled-state.json"); await writeState(await loadConfig(disabledRoot), "software-team", "balanced", disabledStatePath); const disabledSnapshot = await compileSnapshot(disabledRoot, disabledStatePath); const disabledAgents = new Map(agents); const disabledDraft: any = { get: (id: string) => disabledAgents.get(id), update: (id: string, fn: (agent: any) => void) => fn(disabledAgents.get(id)), remove: (id: string) => disabledAgents.delete(id), default: () => undefined }; applyAgentTransform(disabledDraft, disabledSnapshot); assert.equal(disabledAgents.has("coder"), false)
   const value = await architecture(root); value.contextSources["reviewer-memory"].path = "memory/not-there.md"; await saveArchitecture(root, value); value.contextSources["reviewer-memory"].required = true; await saveArchitecture(root, value)
-  const requiredSnapshot = await compileSnapshot(root, join(root, "required-state.json")); await assert.rejects(injectContext({ sessionID: "s", agent: "reviewer", system: [] }, requiredSnapshot), /Required context source/)
+  const requiredStatePath = join(root, "required-state.json"); await writeState(await loadConfig(root), "software-team", "balanced", requiredStatePath); const requiredSnapshot = await compileSnapshot(root, requiredStatePath); await assert.rejects(injectContext({ sessionID: "s", agent: "reviewer", system: [] }, requiredSnapshot), /Required context source/)
   value.contextSources["reviewer-memory"].required = false; value.contextSources["reviewer-memory"].maxBytes = 1; value.contextSources["reviewer-memory"].path = "memory/reviewer.md"; await saveArchitecture(root, value)
-  const optionalRoot = await fixture(); const optionalValue = await architecture(optionalRoot); optionalValue.contextSources["reviewer-memory"].path = "memory/not-there.md"; optionalValue.contextSources["reviewer-memory"].required = false; await saveArchitecture(optionalRoot, optionalValue); const optionalSnapshot = await compileSnapshot(optionalRoot, join(optionalRoot, "optional-state.json")); const optionalEvent = { sessionID: "s", agent: "reviewer", system: [] as any[] }; await injectContext(optionalEvent, optionalSnapshot); assert.equal(optionalEvent.system.length, 0)
-  const outsideMemory = await mkdtemp(join(tmpdir(), "outside-memory-")); const laterPath = join(optionalRoot, "architectures/software-team/memory/later.md"); const laterEvent = { sessionID: "s", agent: "reviewer", system: [] as any[] }; optionalValue.contextSources["reviewer-memory"].path = "memory/later.md"; await saveArchitecture(optionalRoot, optionalValue); const laterSnapshot = await compileSnapshot(optionalRoot, join(optionalRoot, "later-state.json")); await writeFile(join(outsideMemory, "later.md"), "outside"); await symlink(join(outsideMemory, "later.md"), laterPath); await assert.rejects(injectContext(laterEvent, laterSnapshot), /containment validation/)
-  value.contextSources["reviewer-memory"].required = false; value.contextSources["reviewer-memory"].path = "memory/reviewer.md"; value.contextSources["reviewer-memory"].maxBytes = 1; await saveArchitecture(root, value); const oversizeSnapshot = await compileSnapshot(root, join(root, "oversize-state.json")); await assert.rejects(injectContext({ sessionID: "s", agent: "reviewer", system: [] }, oversizeSnapshot), /exceeds/)
+  const optionalRoot = await fixture(); const optionalValue = await architecture(optionalRoot); optionalValue.contextSources["reviewer-memory"].path = "memory/not-there.md"; optionalValue.contextSources["reviewer-memory"].required = false; await saveArchitecture(optionalRoot, optionalValue); const optionalStatePath = join(optionalRoot, "optional-state.json"); await writeState(await loadConfig(optionalRoot), "software-team", "balanced", optionalStatePath); const optionalSnapshot = await compileSnapshot(optionalRoot, optionalStatePath); const optionalEvent = { sessionID: "s", agent: "reviewer", system: [] as any[] }; await injectContext(optionalEvent, optionalSnapshot); assert.equal(optionalEvent.system.length, 0)
+  const outsideMemory = await mkdtemp(join(tmpdir(), "outside-memory-")); const laterPath = join(optionalRoot, "architectures/software-team/memory/later.md"); const laterEvent = { sessionID: "s", agent: "reviewer", system: [] as any[] }; optionalValue.contextSources["reviewer-memory"].path = "memory/later.md"; await saveArchitecture(optionalRoot, optionalValue); const laterStatePath = join(optionalRoot, "later-state.json"); await writeState(await loadConfig(optionalRoot), "software-team", "balanced", laterStatePath); const laterSnapshot = await compileSnapshot(optionalRoot, laterStatePath); await writeFile(join(outsideMemory, "later.md"), "outside"); await symlink(join(outsideMemory, "later.md"), laterPath); await assert.rejects(injectContext(laterEvent, laterSnapshot), /containment validation/)
+  value.contextSources["reviewer-memory"].required = false; value.contextSources["reviewer-memory"].path = "memory/reviewer.md"; value.contextSources["reviewer-memory"].maxBytes = 1; await saveArchitecture(root, value); const oversizeStatePath = join(root, "oversize-state.json"); await writeState(await loadConfig(root), "software-team", "balanced", oversizeStatePath); const oversizeSnapshot = await compileSnapshot(root, oversizeStatePath); await assert.rejects(injectContext({ sessionID: "s", agent: "reviewer", system: [] }, oversizeSnapshot), /exceeds/)
 })
 
 test("retry advances fallback and chooses primary when current is unknown", async () => {
-  const root = await fixture(); const snapshot = await compileSnapshot(root, join(root, "missing-state.json")); const event: any = { sessionID: "s", agent: "coder", model: { providerID: "unknown", modelID: "model" }, error: { status: 503 } }; let switched: any
+  const root = await fixture(); const statePath = join(root, "missing-state.json"); const config = await loadConfig(root); await writeState(config, "software-team", "balanced", statePath); const snapshot = await compileSnapshot(root, statePath); const event: any = { sessionID: "s", agent: "coder", model: { providerID: "unknown", modelID: "model" }, error: { status: 503 } }; let switched: any
   await handleRetry(event, snapshot, async (model) => { switched = model }); assert.equal(switched.providerID, "anthropic"); assert.deepEqual(event.decision, { retry: true, delay: 0 })
 })
 
 test("CLI colors, init no-overwrite, validate, list, and use use a fake executable", async () => {
   assert.equal(colorsEnabled({ NO_COLOR: "1", FORCE_COLOR: "1" }, true), false); assert.equal(colorsEnabled({ FORCE_COLOR: "1" }, false), true); assert.equal(colorsEnabled({}, false), false)
-  const root = await mkdtemp(join(tmpdir(), "agents-fleet-cli-")); const cli = fileURLToPath(new URL("../cli.js", import.meta.url)); const init = spawnSync(process.execPath, [cli, "init", root], { encoding: "utf8" }); assert.equal(init.status, 0, init.stderr); const initArchitecture = join(root, "architectures/software-team/architecture.json"); const initFleet = join(root, "architectures/software-team/fleets/balanced.json"); assert.equal(existsSync(resolve(dirname(initArchitecture), JSON.parse(await readFile(initArchitecture, "utf8")).$schema)), true); assert.equal(existsSync(resolve(dirname(initFleet), JSON.parse(await readFile(initFleet, "utf8")).$schema)), true)
+  const root = await mkdtemp(join(tmpdir(), "agents-fleet-cli-")); const cli = fileURLToPath(new URL("../cli.js", import.meta.url)); const init = spawnSync(process.execPath, [cli, "init", root], { encoding: "utf8" }); assert.equal(init.status, 0, init.stderr)
+  const initialized = await loadConfig(root)
+  for (const [architectureID, fleetIDs] of [["free", ["free"]], ["software-team", ["balanced", "budget"]]] as const) {
+    const architecturePath = join(root, `architectures/${architectureID}/architecture.json`); assert.equal(existsSync(resolve(dirname(architecturePath), JSON.parse(await readFile(architecturePath, "utf8")).$schema)), true)
+    await loadAllFleets(initialized, architectureID)
+    for (const fleetID of fleetIDs) { const fleetPath = join(root, `architectures/${architectureID}/fleets/${fleetID}.json`); assert.equal(existsSync(resolve(dirname(fleetPath), JSON.parse(await readFile(fleetPath, "utf8")).$schema)), true) }
+  }
+  const initializedFiles = ["architectures/free/architecture.json", "architectures/free/fleets/free.json", "architectures/software-team/architecture.json", "architectures/software-team/fleets/balanced.json", "architectures/software-team/fleets/budget.json"]
+  const before = await Promise.all(initializedFiles.map((path) => readFile(join(root, path), "utf8")))
   const marker = join(root, "restart.txt"); const executable = join(root, "fake-opencode"); await writeFile(executable, `#!/bin/sh\necho restarted > '${marker}'\n`); await chmod(executable, 0o755)
   const env = { ...process.env, AGENTS_FLEET_HOME: root, XDG_STATE_HOME: join(root, "xdg-state"), OPENCODE_BIN: executable, NO_COLOR: "1" }; const validate = spawnSync(process.execPath, [cli, "validate"], { env, encoding: "utf8" }); assert.equal(validate.status, 0, validate.stderr)
-  const current = spawnSync(process.execPath, [cli, "current"], { env, encoding: "utf8" }); assert.equal(current.status, 0); assert.equal(current.stdout.trim(), "software-team/balanced")
-  const showShort = spawnSync(process.execPath, [cli, "show", "budget"], { env, encoding: "utf8" }); assert.equal(showShort.status, 0); assert.match(showShort.stdout, /Fleet: budget/)
-  const showExplicit = spawnSync(process.execPath, [cli, "show", "software-team/balanced"], { env, encoding: "utf8" }); assert.equal(showExplicit.status, 0); assert.match(showExplicit.stdout, /Fleet: balanced/)
-  const list = spawnSync(process.execPath, [cli, "list"], { env, encoding: "utf8" }); assert.match(list.stdout, /software-team/); assert.equal(/\x1b\[/.test(list.stdout), false)
-  const coloredEnv: NodeJS.ProcessEnv = { ...env, FORCE_COLOR: "1" }; delete coloredEnv.NO_COLOR; const colored = spawnSync(process.execPath, [cli, "list"], { env: coloredEnv, encoding: "utf8" }); assert.equal(/\x1b\[/.test(colored.stdout), true)
-  const use = spawnSync(process.execPath, [cli, "use", "budget"], { env, encoding: "utf8" }); assert.equal(use.status, 0, use.stderr); assert.equal((await readFile(marker, "utf8")).trim(), "restarted")
-  const existing = await readFile(join(root, "architectures/software-team/architecture.json"), "utf8"); const again = spawnSync(process.execPath, [cli, "init", root], { encoding: "utf8" }); assert.equal(again.status, 0); assert.equal(await readFile(join(root, "architectures/software-team/architecture.json"), "utf8"), existing)
+  const current = spawnSync(process.execPath, [cli, "current"], { env, encoding: "utf8" }); assert.equal(current.status, 0); assert.equal(current.stdout.trim(), "free/free")
+  const showArchitecture = spawnSync(process.execPath, [cli, "show", "free"], { env, encoding: "utf8" }); assert.equal(showArchitecture.status, 0); assert.match(showArchitecture.stdout, /Architecture: free/); assert.match(showArchitecture.stdout, /free \(active\)/)
+  const showFree = spawnSync(process.execPath, [cli, "show", "free/free"], { env, encoding: "utf8" }); assert.equal(showFree.status, 0); assert.match(showFree.stdout, /Fleet: free/); assert.match(showFree.stdout, /opencode\/muse-spark-1\.3-contributor-free/)
+  const showExplicit = spawnSync(process.execPath, [cli, "show", "software-team/budget"], { env, encoding: "utf8" }); assert.equal(showExplicit.status, 0); assert.match(showExplicit.stdout, /Fleet: budget/)
+  const list = spawnSync(process.execPath, [cli, "list"], { env, encoding: "utf8" }); assert.match(list.stdout, /free/); assert.match(list.stdout, /software-team/); assert.equal(/\x1b\[/.test(list.stdout), false)
+  const coloredEnv: NodeJS.ProcessEnv = { ...env, FORCE_COLOR: "1" }; delete coloredEnv.NO_COLOR; const colored = spawnSync(process.execPath, [cli, "show", "free/free"], { env: coloredEnv, encoding: "utf8" }); assert.match(colored.stdout, /\x1b\[35mfree\x1b\[0m/); assert.match(colored.stdout, /\x1b\[36mall\x1b\[0m/); assert.match(colored.stdout, /\x1b\[32mopencode\/muse-spark-1\.3-contributor-free\x1b\[0m/)
+  const use = spawnSync(process.execPath, [cli, "use", "software-team/budget"], { env, encoding: "utf8" }); assert.equal(use.status, 0, use.stderr); assert.equal((await readFile(marker, "utf8")).trim(), "restarted"); assert.match((await readFile(join(root, "xdg-state/agents-fleet/state.json"), "utf8")), /"architecture": "software-team"/)
+  const again = spawnSync(process.execPath, [cli, "init", root], { encoding: "utf8" }); assert.equal(again.status, 0); const after = await Promise.all(initializedFiles.map((path) => readFile(join(root, path), "utf8"))); assert.deepEqual(after, before)
 })

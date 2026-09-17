@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { cp, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises"
 import { spawnSync } from "node:child_process"
-import { dirname, join, resolve } from "node:path"
+import { basename, dirname, join, relative, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { configRoot } from "./paths.js"
 import { loadAllFleets, loadConfig, loadFleet } from "./loader.js"
@@ -70,6 +70,21 @@ async function copyWithoutOverwrite(from: string, to: string): Promise<void> {
   await cp(from, to)
   console.log(`created ${to}`)
 }
+type SchemaTarget = { target: string; schema: string }
+async function discoverSchemaTargets(bundle: string, target: string): Promise<SchemaTarget[]> {
+  const targets: SchemaTarget[] = []
+  async function visit(directory: string): Promise<void> {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const source = join(directory, entry.name)
+      const destination = join(target, relative(bundle, source))
+      if (entry.isDirectory()) { await visit(source); continue }
+      if (entry.name === "architecture.json") targets.push({ target: destination, schema: relative(dirname(destination), join(target, "schemas/architecture-v1.schema.json")).split(sep).join("/") })
+      else if (entry.name.endsWith(".json") && basename(directory) === "fleets") targets.push({ target: destination, schema: relative(dirname(destination), join(target, "schemas/fleet-v1.schema.json")).split(sep).join("/") })
+    }
+  }
+  await visit(bundle)
+  return targets
+}
 async function init(directory: string): Promise<void> {
   const target = resolve(directory)
   const bundle = resolve(dirname(fileURLToPath(import.meta.url)), "..", "examples", "software-team")
@@ -77,21 +92,15 @@ async function init(directory: string): Promise<void> {
   if (!(await existing(bundle))) throw new Error("Bundled software-team example is unavailable")
   if (!(await existing(schemaBundle))) throw new Error("Bundled JSON schemas are unavailable")
   await mkdir(target, { recursive: true })
-  const architectureTarget = join(target, "architectures/software-team/architecture.json")
-  const fleetTargets = ["balanced", "budget"].map((id) => join(target, `architectures/software-team/fleets/${id}.json`))
-  const hadArchitecture = await existing(architectureTarget)
-  const hadFleets = await Promise.all(fleetTargets.map(existing))
+  const schemaTargets = await discoverSchemaTargets(bundle, target)
+  const hadTargets = await Promise.all(schemaTargets.map((item) => existing(item.target)))
   for (const entry of await readdir(bundle, { withFileTypes: true })) await copyWithoutOverwrite(join(bundle, entry.name), join(target, entry.name))
   await copyWithoutOverwrite(schemaBundle, join(target, "schemas"))
-  if (!hadArchitecture) {
-    const document = JSON.parse(await readFile(architectureTarget, "utf8")) as Record<string, unknown>
-    document.$schema = "../../schemas/architecture-v1.schema.json"
-    await writeFile(architectureTarget, `${JSON.stringify(document, null, 2)}\n`)
-  }
-  for (let index = 0; index < fleetTargets.length; index += 1) if (!hadFleets[index]) {
-    const document = JSON.parse(await readFile(fleetTargets[index], "utf8")) as Record<string, unknown>
-    document.$schema = "../../../schemas/fleet-v1.schema.json"
-    await writeFile(fleetTargets[index], `${JSON.stringify(document, null, 2)}\n`)
+  for (let index = 0; index < schemaTargets.length; index += 1) if (!hadTargets[index]) {
+    const item = schemaTargets[index]
+    const document = JSON.parse(await readFile(item.target, "utf8")) as Record<string, unknown>
+    document.$schema = item.schema
+    await writeFile(item.target, `${JSON.stringify(document, null, 2)}\n`)
   }
 }
 async function architectureFor(config: LoadedConfig, id: string): Promise<ResolvedArchitecture> {

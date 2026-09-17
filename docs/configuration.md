@@ -27,3 +27,9 @@ fleet. Chains cannot be empty or repeat a provider/model pair; variants do not
 make duplicates distinct.
 
 No credentials are read or stored. Configure providers in OpenCode itself.
+
+The bundled example includes a minimal `free` architecture and `free` fleet.
+Every enabled agent uses the shared `all` route and the exact model
+`opencode/muse-spark-1.3-contributor-free` (Muse Spark 1.3 Free). This is an
+illustrative active model discovered from the current OpenCode catalog;
+authentication and availability remain OpenCode's responsibility.

@@ -1,0 +1,14 @@
+{
+  "$schema": "../../../../schemas/architecture-v1.schema.json",
+  "version": 1,
+  "id": "free",
+  "name": "Free illustrative architecture",
+  "description": "A minimal zero-cost illustrative architecture for trying the same small software team with one shared model route.",
+  "defaultAgent": "build",
+  "agents": {
+    "build": { "enabled": true, "routeSlot": "all", "mode": "primary", "prompt": { "mode": "preserve-static" } },
+    "coder": { "enabled": true, "routeSlot": "all", "mode": "subagent", "prompt": { "mode": "preserve-static" } },
+    "reviewer": { "enabled": true, "routeSlot": "all", "mode": "subagent", "prompt": { "mode": "preserve-static" } }
+  },
+  "contextSources": {}
+}

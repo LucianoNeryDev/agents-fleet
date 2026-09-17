@@ -17,12 +17,18 @@ npm run build
 node dist/cli.js init ./my-agents-fleet
 AGENTS_FLEET_HOME="$PWD/my-agents-fleet" node dist/cli.js validate
 AGENTS_FLEET_HOME="$PWD/my-agents-fleet" node dist/cli.js list
-AGENTS_FLEET_HOME="$PWD/my-agents-fleet" node dist/cli.js use budget --no-restart
+AGENTS_FLEET_HOME="$PWD/my-agents-fleet" node dist/cli.js use software-team/budget --no-restart
 ```
 
 The bundled [`software-team`](examples/software-team/) configuration is
-illustrative. Its model IDs are examples and provider credentials are never
-managed by this project.
+illustrative. Initialization includes `free/free` and
+`software-team/{balanced,budget}`; when no activation state exists, the
+deterministic default is `free/free`. The free architecture is a minimal,
+zero-cost illustration that routes every enabled agent to the exact OpenCode
+model `opencode/muse-spark-1.3-contributor-free` (Muse Spark 1.3 Free), an
+active model discovered from the current OpenCode catalog. OpenCode remains
+responsible for provider authentication and model availability; this project
+never manages credentials.
 
 ## Commands and integration
 

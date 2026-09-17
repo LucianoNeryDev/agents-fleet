@@ -23,3 +23,9 @@ Names are colored only for terminals. `NO_COLOR` wins over `FORCE_COLOR`; use
 `FORCE_COLOR=1` or `FORCE_COLOR=0` to override TTY detection. Architecture and
 fleet names are magenta, agents cyan, primaries green, fallbacks yellow, and
 separators dim.
+
+The bundled initialization contains the `free/free` and
+`software-team/{balanced,budget}` selections. With no state file, `current`
+selects `free/free`; use an explicit selector such as
+`use software-team/budget --no-restart` when choosing the software-team budget
+fleet.
