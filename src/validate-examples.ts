@@ -1,15 +1,15 @@
 import { join } from "node:path"
 import { readFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
-import { loadAllFleets, loadConfig } from "./loader.js"
-import { validateArchitecture, validateFleet } from "./validation.js"
+import { loadConfig } from "./loader.js"
+import { validateFleet, validateLine } from "./validation.js"
 
 const root = join(fileURLToPath(new URL("..", import.meta.url)), "examples", "software-team")
 const config = await loadConfig(root)
-for (const architecture of config.architectures.values()) {
-  const raw = JSON.parse(await readFile(join(architecture.directory, "architecture.json"), "utf8"))
-  validateArchitecture(raw, config.managedAgentIDs)
-  const fleets = await loadAllFleets(config, architecture.id)
-  for (const fleet of fleets.values()) validateFleet(fleet, new Set(Object.values(architecture.agents).filter((agent) => agent.enabled).map((agent) => agent.routeSlot!)))
+const lineIDs = new Set(config.lines.keys())
+for (const line of config.lines.values()) validateLine(line)
+for (const fleet of config.fleets.values()) {
+  const raw = JSON.parse(await readFile(join(fleet.directory, "fleet.json"), "utf8"))
+  validateFleet(raw, config.managedAgentIDs, lineIDs)
 }
-console.log(`Validated ${config.architectures.size} example architecture(s)`)
+console.log(`Validated ${config.fleets.size} example fleet(s) and ${config.lines.size} line(s)`)

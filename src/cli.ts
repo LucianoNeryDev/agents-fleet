@@ -4,21 +4,22 @@ import { spawnSync } from "node:child_process"
 import { basename, dirname, join, relative, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { configRoot } from "./paths.js"
-import { loadAllFleets, loadConfig, loadFleet } from "./loader.js"
-import { compileSnapshot } from "./runtime.js"
+import { loadConfig, requireFleet, requireLine } from "./loader.js"
 import { selectState, writeState } from "./state.js"
 import { doctorExitCode, runDiagnostics, validateOpenCodeExecutable } from "./diagnostics.js"
-import type { Fleet, LoadedConfig, ResolvedArchitecture } from "./types.js"
+import { assertID, lineID } from "./validation.js"
+import type { Line, LoadedConfig, ModelRef, ResolvedFleet } from "./types.js"
 
 const HELP = `Usage: agents-fleet <command> [options]
 
 Commands:
   init [directory]                         Copy the generic example without overwriting
-  validate [directory]                     Validate all architecture and fleet files
-  current                                  Print architecture/fleet
-  list [architecture]                     List architectures and nested fleets
-  show <architecture|fleet|architecture/fleet>  Show configuration details
-  use <fleet|architecture/fleet> [--no-restart]  Persist selection and restart OpenCode
+  validate [directory]                     Validate every fleet and line file
+  current                                  Print the active fleet
+  list                                     List fleets with the lines their agents bind
+  lines                                    List the shared line catalog
+  show <fleet|$line>                       Show fleet or line details
+  use <fleet> [--no-restart]               Persist the fleet selection and restart OpenCode
   doctor [directory] [--offline] [--json]  Diagnose configuration and OpenCode catalogs
 
 Options:
@@ -29,7 +30,7 @@ Options:
   --json                                   Emit one JSON doctor report (doctor)
 `
 
-const ANSI = { reset: "\x1b[0m", magenta: "\x1b[35m", cyan: "\x1b[36m", green: "\x1b[32m", yellow: "\x1b[33m", dim: "\x1b[2m" }
+const ANSI = { reset: "\x1b[0m", magenta: "\x1b[35m", blue: "\x1b[34m", cyan: "\x1b[36m", green: "\x1b[32m", yellow: "\x1b[33m", dim: "\x1b[2m" }
 export function colorsEnabled(env: NodeJS.ProcessEnv = process.env, isTTY = Boolean(process.stdout.isTTY)): boolean {
   if (env.NO_COLOR !== undefined) return false
   if (env.FORCE_COLOR === "1") return true
@@ -37,15 +38,11 @@ export function colorsEnabled(env: NodeJS.ProcessEnv = process.env, isTTY = Bool
   return isTTY
 }
 function color(value: string, style: string, enabled: boolean): string { return enabled ? `${style}${value}${ANSI.reset}` : value }
-function modelLabel(model: { providerID: string; modelID: string; variant?: string }): string { return `${model.providerID}/${model.modelID}${model.variant ? `#${model.variant}` : ""}` }
-function routeLabel(models: readonly { providerID: string; modelID: string; variant?: string }[], enabled: boolean): string {
+function modelLabel(model: ModelRef): string { return `${model.providerID}/${model.modelID}${model.variant ? `#${model.variant}` : ""}` }
+function routeLabel(models: readonly ModelRef[], enabled: boolean): string {
   return models.map((model, index) => color(modelLabel(model), index === 0 ? ANSI.green : ANSI.yellow, enabled)).join(color(" -> ", ANSI.dim, enabled))
 }
-function selector(value: string, activeArchitecture: string): { architecture: string; fleet: string } {
-  const parts = value.split("/")
-  if (parts.length > 2 || parts.some((part) => !part)) throw new Error(`Invalid selector "${value}"; expected fleet or architecture/fleet`)
-  return { architecture: parts.length === 2 ? parts[0] : activeArchitecture, fleet: parts.length === 2 ? parts[1] : parts[0] }
-}
+function lineLabel(reference: string, enabled: boolean): string { return color(reference, ANSI.blue, enabled) }
 function optionArgs(args: string[]): { args: string[]; config?: string; state?: string; noRestart: boolean; offline: boolean; json: boolean } {
   const positional: string[] = []; let config: string | undefined; let state: string | undefined; let noRestart = false; let offline = false; let json = false
   for (let index = 0; index < args.length; index += 1) {
@@ -84,8 +81,9 @@ async function discoverSchemaTargets(bundle: string, target: string): Promise<Sc
       const source = join(directory, entry.name)
       const destination = join(target, relative(bundle, source))
       if (entry.isDirectory()) { await visit(source); continue }
-      if (entry.name === "architecture.json") targets.push({ target: destination, schema: relative(dirname(destination), join(target, "schemas/architecture-v1.schema.json")).split(sep).join("/") })
-      else if (entry.name.endsWith(".json") && basename(directory) === "fleets") targets.push({ target: destination, schema: relative(dirname(destination), join(target, "schemas/fleet-v1.schema.json")).split(sep).join("/") })
+      if (!entry.name.endsWith(".json")) continue
+      const schema = entry.name === "fleet.json" ? "fleet-v1.schema.json" : basename(directory) === "lines" ? "line-v1.schema.json" : undefined
+      if (schema) targets.push({ target: destination, schema: relative(dirname(destination), join(target, "schemas", schema)).split(sep).join("/") })
     }
   }
   await visit(bundle)
@@ -109,26 +107,44 @@ async function init(directory: string): Promise<void> {
     await writeFile(item.target, `${JSON.stringify(document, null, 2)}\n`)
   }
 }
-async function architectureFor(config: LoadedConfig, id: string): Promise<ResolvedArchitecture> {
-  const architecture = config.architectures.get(id)
-  if (!architecture) throw new Error(`Unknown architecture "${id}"`)
-  return architecture
+function chainOf(fleet: ResolvedFleet, agentID: string): readonly ModelRef[] | undefined {
+  return fleet.linesByAgent.get(agentID)?.chain
 }
-async function showArchitecture(config: LoadedConfig, architecture: ResolvedArchitecture, active: { architecture: string; fleet: string }, enabled: boolean): Promise<void> {
-  const fleets = await loadAllFleets(config, architecture.id)
-  console.log(`Architecture${color(": ", ANSI.dim, enabled)}${color(architecture.id, ANSI.magenta, enabled)}`)
-  console.log(architecture.description)
-  console.log("Fleets:")
-  for (const id of fleets.keys()) console.log(`  ${color(id, ANSI.magenta, enabled)}${active.architecture === architecture.id && active.fleet === id ? " (active)" : ""}`)
-  console.log("Agents:")
-  for (const [id, spec] of Object.entries(architecture.agents)) console.log(`  ${color(id, ANSI.cyan, enabled)}${spec.enabled ? ` [${spec.routeSlot}]` : " (disabled)"}`)
+function lineUsage(config: LoadedConfig, id: string): string[] {
+  const usage: string[] = []
+  for (const fleet of [...config.fleets.values()].sort((left, right) => left.id.localeCompare(right.id))) {
+    const agents = [...fleet.linesByAgent].filter(([, line]) => line.id === id).map(([agentID]) => agentID).sort()
+    if (agents.length) usage.push(`${fleet.id}: ${agents.join(", ")}`)
+  }
+  return usage
 }
-async function showFleet(config: LoadedConfig, architecture: ResolvedArchitecture, fleet: Fleet, active: { architecture: string; fleet: string }, enabled: boolean): Promise<void> {
-  console.log(`Architecture${color(": ", ANSI.dim, enabled)}${color(architecture.id, ANSI.magenta, enabled)}`)
-  console.log(`Fleet${color(": ", ANSI.dim, enabled)}${color(fleet.id, ANSI.magenta, enabled)}${active.architecture === architecture.id && active.fleet === fleet.id ? " (active)" : ""}`)
+function showFleet(fleet: ResolvedFleet, activeFleet: string, enabled: boolean): void {
+  console.log(`Fleet${color(": ", ANSI.dim, enabled)}${color(fleet.id, ANSI.magenta, enabled)}${fleet.id === activeFleet ? " (active)" : ""}`)
   console.log(fleet.description)
-  for (const [slot, chain] of Object.entries(fleet.chains)) console.log(`${color(slot, ANSI.cyan, enabled)}${color(": ", ANSI.dim, enabled)}${routeLabel(chain, enabled)}`)
-  if (fleet.defaultChain) console.log(`${color("(default)", ANSI.cyan, enabled)}${color(": ", ANSI.dim, enabled)}${routeLabel(fleet.defaultChain, enabled)}`)
+  console.log("Agents:")
+  for (const [id, spec] of Object.entries(fleet.agents)) {
+    if (!spec.enabled) { console.log(`  ${color(id, ANSI.cyan, enabled)} (disabled)`); continue }
+    const reference = spec.line ?? "?"
+    const chain = chainOf(fleet, id)
+    console.log(`  ${color(id, ANSI.cyan, enabled)}${color(" [", ANSI.dim, enabled)}${spec.mode ?? "preserve-static"}${color("] ", ANSI.dim, enabled)}${lineLabel(reference, enabled)}${chain ? color(": ", ANSI.dim, enabled) + routeLabel(chain, enabled) : ""}`)
+  }
+  const sources = Object.entries(fleet.contextSources)
+  if (sources.length) {
+    console.log("Context sources:")
+    for (const [id, source] of sources) console.log(`  ${color(id, ANSI.cyan, enabled)}${color(": ", ANSI.dim, enabled)}${source.relativePath} (${source.required ? "required" : "optional"}, max ${source.maxBytes} bytes)`)
+  }
+  console.log(`Default agent${color(": ", ANSI.dim, enabled)}${fleet.defaultAgent}`)
+  if (fleet.defaultLine) console.log(`Default line${color(": ", ANSI.dim, enabled)}${lineLabel(`$${fleet.defaultLine.id}`, enabled)}`)
+}
+function showLine(config: LoadedConfig, line: Line, enabled: boolean): void {
+  console.log(`Line${color(": ", ANSI.dim, enabled)}${lineLabel(`$${line.id}`, enabled)}`)
+  console.log(line.description)
+  console.log("Chain:")
+  console.log(`  ${routeLabel(line.chain, enabled)}`)
+  const usage = lineUsage(config, line.id)
+  console.log("Used by:")
+  if (usage.length) for (const item of usage) console.log(`  ${item}`)
+  else console.log("  (no fleet agent binds this line)")
 }
 function restart(): void {
   const executable = validateOpenCodeExecutable()
@@ -148,7 +164,7 @@ export async function run(argv = process.argv.slice(2)): Promise<void> {
     if (parsed.json) process.stdout.write(`${JSON.stringify(report)}\n`)
     else {
       console.log(`Doctor: ${report.complete ? (report.ok ? "OK" : "ERRORS") : "INCOMPLETE"}`)
-      if (report.selection) console.log(`Selection: ${report.selection.architecture}/${report.selection.fleet}`)
+      if (report.selection) console.log(`Selection: ${report.selection.fleet}`)
       for (const item of report.diagnostics) {
         console.log(`[${item.severity}] ${item.code}${item.location ? ` (${item.location})` : ""}: ${item.message}`)
         if (item.hint) console.log(`  hint: ${item.hint}`)
@@ -161,30 +177,39 @@ export async function run(argv = process.argv.slice(2)): Promise<void> {
   if (command === "validate") {
     if (parsed.args.length > 1) throw new Error("validate accepts at most one directory")
     const config = await loadConfig(parsed.args[0] ?? configRoot(parsed.config))
-    for (const id of config.architectures.keys()) await loadAllFleets(config, id)
-    console.log(`Valid configuration: ${config.architectures.size} architecture(s)`); return
+    console.log(`Valid configuration: ${config.fleets.size} fleet(s), ${config.lines.size} line(s)`); return
   }
-  const root = configRoot(parsed.config)
-  const config = await loadConfig(root); const state = await selectState(config, parsed.state); const active = { architecture: state.architecture, fleet: state.fleet }
-  if (command === "current") { if (parsed.args.length) throw new Error("current does not accept arguments"); console.log(`${active.architecture}/${active.fleet}`); return }
+  const config = await loadConfig(configRoot(parsed.config))
+  if (command === "lines") {
+    if (parsed.args.length) throw new Error("lines does not accept arguments")
+    for (const line of [...config.lines.values()].sort((left, right) => left.id.localeCompare(right.id))) console.log(`${lineLabel(`$${line.id}`, colorsEnabled())}${color(": ", ANSI.dim, colorsEnabled())}${routeLabel(line.chain, colorsEnabled())}`)
+    return
+  }
+  if (command === "use") {
+    if (parsed.args.length !== 1) throw new Error("use requires exactly one fleet ID")
+    const fleet = requireFleet(config, parsed.args[0])
+    const next = await writeState(config, fleet.id, parsed.state)
+    if (parsed.noRestart) { console.log(`Active fleet: ${next.fleet}; service restart skipped.`); return }
+    try { restart() } catch (error) { throw new Error(`Fleet ${next.fleet} was saved, but the running service may be stale: ${error instanceof Error ? error.message : String(error)}`) }
+    console.log(`Active fleet: ${next.fleet}`); return
+  }
+  const active = (await selectState(config, parsed.state)).fleet
+  if (command === "current") { if (parsed.args.length) throw new Error("current does not accept arguments"); console.log(active); return }
   if (command === "list") {
-    if (parsed.args.length > 1) throw new Error("list accepts at most one architecture")
-    const architectures = parsed.args[0] ? [await architectureFor(config, parsed.args[0])] : [...config.architectures.values()]
-    for (const architecture of architectures) { console.log(`${color(architecture.id, ANSI.magenta, colorsEnabled())}${architecture.id === active.architecture ? " (active)" : ""}`); for (const fleet of (await loadAllFleets(config, architecture.id)).keys()) console.log(`  ${color(fleet, ANSI.magenta, colorsEnabled())}${architecture.id === active.architecture && fleet === active.fleet ? " (active)" : ""}`) }
+    if (parsed.args.length) throw new Error("list does not accept arguments")
+    const enabled = colorsEnabled()
+    for (const fleet of [...config.fleets.values()].sort((left, right) => left.id.localeCompare(right.id))) {
+      console.log(`${color(fleet.id, ANSI.magenta, enabled)}${fleet.id === active ? " (active)" : ""}`)
+      for (const [agentID, line] of fleet.linesByAgent) console.log(`  ${color(agentID, ANSI.cyan, enabled)}${color(" -> ", ANSI.dim, enabled)}${lineLabel(`$${line.id}`, enabled)}`)
+    }
     return
   }
   if (command === "show") {
-    if (parsed.args.length !== 1) throw new Error("show requires exactly one selector")
+    if (parsed.args.length !== 1) throw new Error("show requires exactly one fleet ID or $line reference")
     const value = parsed.args[0]
-    if (!value.includes("/") && config.architectures.has(value)) { await showArchitecture(config, config.architectures.get(value)!, active, colorsEnabled()); return }
-    const selected = selector(value, active.architecture); const architecture = await architectureFor(config, selected.architecture); await showFleet(config, architecture, await loadFleet(config, selected.architecture, selected.fleet), active, colorsEnabled()); return
-  }
-  if (command === "use") {
-    if (parsed.args.length !== 1) throw new Error("use requires exactly one fleet or architecture/fleet")
-    const selected = selector(parsed.args[0], active.architecture); await architectureFor(config, selected.architecture); const next = await writeState(config, selected.architecture, selected.fleet, parsed.state)
-    if (parsed.noRestart) { console.log(`Active model fleet: ${next.architecture}/${next.fleet}; service restart skipped.`); return }
-    try { restart() } catch (error) { throw new Error(`Selection ${next.architecture}/${next.fleet} was saved, but the running service may be stale: ${error instanceof Error ? error.message : String(error)}`) }
-    console.log(`Active model fleet: ${next.architecture}/${next.fleet}`); return
+    const enabled = colorsEnabled()
+    if (value.startsWith("$")) { showLine(config, requireLine(config, lineID(value)), enabled); return }
+    assertID(value, "Fleet selector"); showFleet(requireFleet(config, value), active, enabled); return
   }
   throw new Error(`Unknown command "${command}"\n${HELP}`)
 }

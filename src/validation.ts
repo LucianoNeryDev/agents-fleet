@@ -1,13 +1,19 @@
-import { lstat, realpath } from "node:fs/promises"
+import { realpath } from "node:fs/promises"
 import { isAbsolute, relative, resolve, sep } from "node:path"
-import type { Architecture, AgentConfig, ContextSource, Fleet, ModelRef } from "./types.js"
+import type { AgentConfig, ContextSource, Fleet, Line, ModelRef } from "./types.js"
 
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+const LINE_REF = /^\$[a-z0-9]+(?:-[a-z0-9]+)*$/
 const AGENT_MODES = new Set(["primary", "subagent", "all"])
 
 export function isValidID(value: unknown): value is string { return typeof value === "string" && ID.test(value) }
 export function assertID(value: unknown, label: string): asserts value is string {
   if (!isValidID(value)) throw new Error(`${label} must be a lowercase kebab-case ID`)
+}
+/** A line reference is a bare catalog ID written with a leading `$`. */
+export function lineID(reference: string): string { return reference.slice(1) }
+export function assertLineRef(value: unknown, label: string): asserts value is string {
+  if (typeof value !== "string" || !LINE_REF.test(value)) throw new Error(`${label} must be a line reference such as $heavy`)
 }
 function object(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`)
@@ -42,16 +48,22 @@ export function validateChain(value: unknown, label: string): asserts value is r
   })
 }
 
-function validateAgent(id: string, value: unknown): asserts value is AgentConfig {
+function requireLineReference(reference: string, label: string, lineIDs?: ReadonlySet<string>): void {
+  if (lineIDs && !lineIDs.has(lineID(reference))) throw new Error(`${label} references unknown line ${reference}`)
+}
+
+function validateAgent(id: string, value: unknown, lineIDs?: ReadonlySet<string>): asserts value is AgentConfig {
   const agent = object(value, `Agent ${id}`)
-  noUnknown(agent, ["enabled", "routeSlot", "mode", "hidden", "description", "steps", "prompt", "contextSourceIDs"], `Agent ${id}`)
+  noUnknown(agent, ["enabled", "line", "mode", "hidden", "description", "steps", "prompt", "contextSourceIDs"], `Agent ${id}`)
   if (typeof agent.enabled !== "boolean") throw new Error(`Agent ${id} must explicitly set enabled or disabled`)
   if (!agent.enabled) {
     if (Object.keys(agent).some((key) => key !== "enabled")) throw new Error(`Disabled agent ${id} cannot contain behavior configuration`)
     return
   }
-  if (agent.routeSlot !== undefined) assertID(agent.routeSlot, `Agent ${id} routeSlot`)
-  else throw new Error(`Enabled agent ${id} must have a routeSlot`)
+  if (agent.line !== undefined) {
+    assertLineRef(agent.line, `Agent ${id} line`)
+    requireLineReference(agent.line, `Agent ${id}`, lineIDs)
+  } else throw new Error(`Enabled agent ${id} must name a line`)
   if (agent.mode !== undefined && agent.mode !== "preserve-static" && !AGENT_MODES.has(agent.mode as string)) throw new Error(`Agent ${id} has an invalid mode`)
   if (agent.hidden !== undefined && agent.hidden !== "preserve-static" && typeof agent.hidden !== "boolean") throw new Error(`Agent ${id} has an invalid hidden value`)
   if (agent.description !== undefined && agent.description !== "preserve-static" && typeof agent.description !== "string") throw new Error(`Agent ${id} has an invalid description`)
@@ -72,35 +84,31 @@ function validateAgent(id: string, value: unknown): asserts value is AgentConfig
   }
 }
 
-export function validateFleet(fleet: Fleet, requiredSlots?: ReadonlySet<string>): void {
-  const value = object(fleet, "Fleet")
-  noUnknown(value, ["$schema", "version", "id", "name", "description", "chains", "defaultChain"], "Fleet")
-  if (value.version !== 1) throw new Error("Fleet version must be 1")
-  assertID(value.id, "Fleet ID"); text(value.name, `Fleet ${String(value.id)} name`); text(value.description, `Fleet ${String(value.id)} description`)
-  const chains = object(value.chains, `Fleet ${String(value.id)} chains`)
-  const slots = Object.keys(chains)
-  if (!slots.length) throw new Error(`Fleet ${String(value.id)} must contain route-slot chains`)
-  for (const slot of slots) { assertID(slot, `Fleet ${String(value.id)} route slot`); validateChain(chains[slot], `Fleet ${String(value.id)} route slot ${slot}`) }
-  if (value.defaultChain !== undefined) validateChain(value.defaultChain, `Fleet ${String(value.id)} defaultChain`)
-  if (requiredSlots) {
-    for (const slot of requiredSlots) if (!Object.hasOwn(chains, slot)) throw new Error(`Fleet ${String(value.id)} is missing route slot ${slot}`)
-    for (const slot of slots) if (!requiredSlots.has(slot)) throw new Error(`Fleet ${String(value.id)} contains unknown route slot ${slot}`)
-  }
+export function validateLine(line: Line): void {
+  const value = object(line, "Line")
+  noUnknown(value, ["$schema", "version", "id", "name", "description", "chain"], "Line")
+  if (value.version !== 1) throw new Error("Line version must be 1")
+  assertID(value.id, "Line ID"); text(value.name, `Line ${String(value.id)} name`); text(value.description, `Line ${String(value.id)} description`)
+  validateChain(value.chain, `Line ${String(value.id)} chain`)
 }
 
-export function validateArchitecture(architecture: Architecture, managedAgentIDs?: ReadonlySet<string>): void {
-  const value = object(architecture, "Architecture")
-  noUnknown(value, ["$schema", "version", "id", "name", "description", "defaultAgent", "agents", "contextSources"], "Architecture")
-  if (value.version !== 1) throw new Error("Architecture version must be 1")
-  assertID(value.id, "Architecture ID"); text(value.name, `Architecture ${String(value.id)} name`); text(value.description, `Architecture ${String(value.id)} description`); assertID(value.defaultAgent, "Architecture defaultAgent")
-  const agents = object(value.agents, `Architecture ${String(value.id)} agents`)
-  if (!Object.keys(agents).length) throw new Error(`Architecture ${String(value.id)} must contain agents`)
-  if (!Object.hasOwn(agents, value.defaultAgent as string)) throw new Error(`Architecture ${String(value.id)} defaultAgent is not in its roster`)
-  const enabledSlots = new Set<string>()
-  for (const [id, agent] of Object.entries(agents)) { assertID(id, "Architecture agent ID"); validateAgent(id, agent); if ((agent as AgentConfig).enabled) enabledSlots.add((agent as AgentConfig).routeSlot!) }
-  if (!(agents[value.defaultAgent as string] as AgentConfig).enabled) throw new Error(`Architecture ${String(value.id)} defaultAgent must be enabled`)
-  if (managedAgentIDs) for (const id of managedAgentIDs) if (!Object.hasOwn(agents, id)) throw new Error(`Architecture ${String(value.id)} must explicitly enable or disable managed agent ${id}`)
-  const sources = object(value.contextSources, `Architecture ${String(value.id)} contextSources`)
+export function validateFleet(fleet: Fleet, managedAgentIDs?: ReadonlySet<string>, lineIDs?: ReadonlySet<string>): void {
+  const value = object(fleet, "Fleet")
+  noUnknown(value, ["$schema", "version", "id", "name", "description", "defaultAgent", "defaultLine", "agents", "contextSources", "lines"], "Fleet")
+  if (value.version !== 1) throw new Error("Fleet version must be 1")
+  assertID(value.id, "Fleet ID"); text(value.name, `Fleet ${String(value.id)} name`); text(value.description, `Fleet ${String(value.id)} description`); assertID(value.defaultAgent, "Fleet defaultAgent")
+  const agents = object(value.agents, `Fleet ${String(value.id)} agents`)
+  if (!Object.keys(agents).length) throw new Error(`Fleet ${String(value.id)} must contain agents`)
+  if (!Object.hasOwn(agents, value.defaultAgent as string)) throw new Error(`Fleet ${String(value.id)} defaultAgent is not in its roster`)
+  let enabled = 0
+  for (const [id, agent] of Object.entries(agents)) { assertID(id, "Fleet agent ID"); validateAgent(id, agent, lineIDs); if ((agent as AgentConfig).enabled) enabled += 1 }
+  if (!(agents[value.defaultAgent as string] as AgentConfig).enabled) throw new Error(`Fleet ${String(value.id)} defaultAgent must be enabled`)
+  if (managedAgentIDs) for (const id of managedAgentIDs) if (!Object.hasOwn(agents, id)) throw new Error(`Fleet ${String(value.id)} must explicitly enable or disable managed agent ${id}`)
+  if (value.defaultLine !== undefined) {
+    assertLineRef(value.defaultLine, `Fleet ${String(value.id)} defaultLine`)
+    requireLineReference(value.defaultLine, `Fleet ${String(value.id)} defaultLine`, lineIDs)
+  }
+  const sources = object(value.contextSources, `Fleet ${String(value.id)} contextSources`)
   for (const [id, source] of Object.entries(sources)) {
     assertID(id, "Context source ID")
     const item = object(source, `Context source ${id}`)
@@ -117,23 +125,22 @@ export function validateArchitecture(architecture: Architecture, managedAgentIDs
     if (!Object.hasOwn(sources, sourceID)) throw new Error(`Agent ${id} references unknown context source ${sourceID}`)
     if ((sources[sourceID] as ContextSource).ownerAgentID !== id) throw new Error(`Context source ${sourceID} is owned by ${(sources[sourceID] as ContextSource).ownerAgentID}, not ${id}`)
   }
-  const fleets = (value as unknown as { fleets?: unknown }).fleets
-  if (fleets !== undefined) throw new Error(`Architecture ${String(value.id)} must keep fleets in separate files`)
-  if (!enabledSlots.size) throw new Error(`Architecture ${String(value.id)} must enable at least one agent`)
-}
+  const lines = (value as unknown as { lines?: unknown }).lines
+  if (lines !== undefined) throw new Error(`Fleet ${String(value.id)} must keep lines in the shared line catalog`)
+  if (!enabled) throw new Error(`Fleet ${String(value.id)} must enable at least one agent`)}
 
 export async function assertContainedPath(root: string, relativePath: string, label: string): Promise<string> {
   if (!relativePath || isAbsolute(relativePath) || relativePath.includes("\0")) throw new Error(`${label} must be a relative path`)
   const base = await realpath(root)
   const candidate = resolve(base, relativePath)
   const lexical = relative(base, candidate)
-  if (lexical === ".." || lexical.startsWith(`..${sep}`) || isAbsolute(lexical)) throw new Error(`${label} escapes its architecture directory`)
+  if (lexical === ".." || lexical.startsWith(`..${sep}`) || isAbsolute(lexical)) throw new Error(`${label} escapes its fleet directory`)
   let probe = candidate
   while (true) {
     try {
       const resolved = await realpath(probe)
       const rel = relative(base, resolved)
-      if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error(`${label} escapes its architecture directory through a symlink`)
+      if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error(`${label} escapes its fleet directory through a symlink`)
       return probe === candidate ? resolved : candidate
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error

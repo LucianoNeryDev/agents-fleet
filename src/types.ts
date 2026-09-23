@@ -13,7 +13,8 @@ export type PromptPolicy = Readonly<{
 
 export type AgentConfig = Readonly<{
   enabled: boolean
-  routeSlot?: string
+  /** Line reference in `$name` form, for example `$heavy`. */
+  line?: string
   mode?: StaticField<AgentMode>
   hidden?: StaticField<boolean>
   description?: StaticField<string>
@@ -30,48 +31,56 @@ export type ContextSource = Readonly<{
   maxBytes: number
 }>
 
-export type Architecture = Readonly<{
+/** A named model chain: one primary followed by optional fallbacks. */
+export type Line = Readonly<{
   version: 1
   id: string
   name: string
   description: string
-  defaultAgent: string
-  agents: Readonly<Record<string, AgentConfig>>
-  contextSources: Readonly<Record<string, ContextSource>>
+  chain: readonly ModelRef[]
 }>
+
+/** The shared line catalog. Lines are global; no fleet owns one. */
+export type LineCatalog = ReadonlyMap<string, Line>
 
 export type Fleet = Readonly<{
   version: 1
   id: string
   name: string
   description: string
-  chains: Readonly<Record<string, readonly ModelRef[]>>
-  defaultChain?: readonly ModelRef[]
+  defaultAgent: string
+  /** Line reference used when a runtime event names no agent. */
+  defaultLine?: string
+  agents: Readonly<Record<string, AgentConfig>>
+  contextSources: Readonly<Record<string, ContextSource>>
 }>
 
 export type ActivationState = Readonly<{
   version: 1
-  architecture: string
   fleet: string
-  architectureActivatedAt: number
+  fleetActivatedAt: number
 }>
 
-export type ResolvedContextSource = ContextSource & { id: string; path: string; relativePath: string; architectureDirectory: string }
-export type ResolvedArchitecture = Architecture & {
+export type ResolvedContextSource = ContextSource & { id: string; path: string; relativePath: string; fleetDirectory: string }
+export type ResolvedFleet = Omit<Fleet, "defaultLine" | "contextSources"> & {
   directory: string
   prompts: ReadonlyMap<string, string>
   contextSources: Readonly<Record<string, ResolvedContextSource>>
+  linesByAgent: ReadonlyMap<string, Line>
+  defaultLine?: Line
 }
 export type LoadedConfig = Readonly<{
   root: string
-  architectures: ReadonlyMap<string, ResolvedArchitecture>
+  fleets: ReadonlyMap<string, ResolvedFleet>
+  lines: LineCatalog
   managedAgentIDs: ReadonlySet<string>
 }>
 export type ActivationSnapshot = Readonly<{
   state: ActivationState
-  architecture: ResolvedArchitecture
-  fleet: Fleet
-  routesByAgent: ReadonlyMap<string, readonly ModelRef[]>
+  fleet: ResolvedFleet
+  lines: LineCatalog
+  chainsByAgent: ReadonlyMap<string, readonly ModelRef[]>
+  defaultChain?: readonly ModelRef[]
   prompts: ReadonlyMap<string, string>
   contextSources: ReadonlyMap<string, ResolvedContextSource>
   managedAgentIDs: ReadonlySet<string>

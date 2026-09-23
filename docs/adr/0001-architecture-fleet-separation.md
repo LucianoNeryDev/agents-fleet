@@ -1,5 +1,7 @@
 # ADR 0001: Separate architectures from fleets
 
+**Superseded by [ADR 0004](0004-fleet-line-separation.md).**
+
 ## Decision
 
 Architecture files own agent topology, policies, prompts, and context

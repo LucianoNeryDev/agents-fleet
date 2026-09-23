@@ -1,0 +1,15 @@
+{
+  "$schema": "../../../../schemas/fleet-v1.schema.json",
+  "version": 1,
+  "id": "free",
+  "name": "Free illustrative fleet",
+  "description": "A minimal zero-cost illustrative fleet for trying the same small software team with one shared line.",
+  "defaultAgent": "build",
+  "defaultLine": "$free",
+  "agents": {
+    "build": { "enabled": true, "line": "$free", "mode": "primary", "prompt": { "mode": "preserve-static" } },
+    "coder": { "enabled": true, "line": "$free", "mode": "subagent", "prompt": { "mode": "preserve-static" } },
+    "reviewer": { "enabled": true, "line": "$free", "mode": "subagent", "prompt": { "mode": "preserve-static" } }
+  },
+  "contextSources": {}
+}

@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises"
-import { loadConfig, loadFleet } from "./loader.js"
+import { loadConfig, requireFleet } from "./loader.js"
 import { stateFilePath } from "./paths.js"
 import { loadState, selectState, writeState } from "./state.js"
 import { assertContainedPath } from "./validation.js"
-import type { ActivationSnapshot, ModelRef, ResolvedArchitecture } from "./types.js"
+import type { ActivationSnapshot, ModelRef } from "./types.js"
 
 export function sameModel(left: ModelRef | undefined, right: { providerID?: string; modelID?: string } | undefined): boolean {
   return Boolean(left && right && left.providerID === right.providerID && left.modelID === right.modelID)
@@ -34,21 +34,25 @@ export function isRetryable(error: unknown): boolean {
   return /rate limit|too many requests|quota|capacity|overloaded|service unavailable|timeout|timed out|throttl|\b(408|409|425|429|500|502|503|504|529)\b/.test(text)
 }
 
-function snapshotArchitecture(architecture: ResolvedArchitecture): ResolvedArchitecture {
-  return architecture
-}
-
 export async function compileSnapshot(configRoot?: string, statePath = stateFilePath(), now = Date.now()): Promise<ActivationSnapshot> {
   const config = await loadConfig(configRoot)
   const selected = await selectState(config, statePath)
-  const fleet = await loadFleet(config, selected.architecture, selected.fleet)
-  const architecture = snapshotArchitecture(config.architectures.get(selected.architecture)!)
-  const prompts = new Map(architecture.prompts)
-  const routesByAgent = new Map<string, readonly ModelRef[]>()
-  for (const agent of Object.entries(architecture.agents)) if (agent[1].enabled) routesByAgent.set(agent[0], fleet.chains[agent[1].routeSlot!]!)
+  const fleet = requireFleet(config, selected.fleet)
+  const chainsByAgent = new Map<string, readonly ModelRef[]>()
+  for (const [agentID, line] of fleet.linesByAgent) chainsByAgent.set(agentID, line.chain)
+  const prompts = new Map(fleet.prompts)
   const stored = await loadState(statePath)
-  const state = stored ?? await writeState(config, selected.architecture, selected.fleet, statePath, now)
-  return Object.freeze({ state, architecture, fleet, routesByAgent, prompts, contextSources: new Map(Object.entries(architecture.contextSources)), managedAgentIDs: config.managedAgentIDs })
+  const state = stored ?? await writeState(config, selected.fleet, statePath, now)
+  return Object.freeze({
+    state,
+    fleet,
+    lines: config.lines,
+    chainsByAgent,
+    ...(fleet.defaultLine ? { defaultChain: fleet.defaultLine.chain } : {}),
+    prompts,
+    contextSources: new Map(Object.entries(fleet.contextSources)),
+    managedAgentIDs: config.managedAgentIDs
+  })
 }
 
 export type RetryEvent = { sessionID: string; agent?: string; model: { providerID: string; modelID?: string; id?: string; variant?: string }; error: unknown; decision?: unknown }
@@ -58,7 +62,7 @@ type SessionAPI = { hook?: (name: string, callback: (event: any) => Promise<void
 export async function handleRetry(event: RetryEvent, snapshot: ActivationSnapshot, switchModel: (model: ModelRef, sessionID: string) => Promise<void>): Promise<void> {
   if (!isRetryable(event.error)) return
   const current = { providerID: event.model.providerID, modelID: event.model.modelID ?? event.model.id }
-  const chain = event.agent ? snapshot.routesByAgent.get(event.agent) : snapshot.fleet.defaultChain
+  const chain = event.agent ? snapshot.chainsByAgent.get(event.agent) : snapshot.defaultChain
   const next = nextFallback(chain, current)
   if (!next) { event.decision = { retry: false }; return }
   try { await switchModel(next, event.sessionID); event.decision = { retry: true, delay: 0 } }
@@ -66,16 +70,16 @@ export async function handleRetry(event: RetryEvent, snapshot: ActivationSnapsho
 }
 
 async function sessionIsCurrent(session: SessionAPI | undefined, sessionID: string, snapshot: ActivationSnapshot): Promise<void> {
-  if (!session?.get || !snapshot.state.architectureActivatedAt) return
+  if (!session?.get || !snapshot.state.fleetActivatedAt) return
   let value: unknown
   try { value = await session.get({ sessionID }) }
   catch (error) { throw new Error(`Unable to verify session age: ${error instanceof Error ? error.message : String(error)}`) }
   const created = value && typeof value === "object" ? (value as { time?: { created?: unknown } }).time?.created : undefined
-  if (typeof created === "number" && created < snapshot.state.architectureActivatedAt) throw new Error("This session predates architecture activation; start a new session before using architecture memory.")
+  if (typeof created === "number" && created < snapshot.state.fleetActivatedAt) throw new Error("This session predates fleet activation; start a new session before using fleet memory.")
 }
 
 export async function injectContext(event: ContextEvent, snapshot: ActivationSnapshot, session?: SessionAPI): Promise<void> {
-  const agent = event.agent ? snapshot.architecture.agents[event.agent] : undefined
+  const agent = event.agent ? snapshot.fleet.agents[event.agent] : undefined
   if (!agent?.enabled) return
   await sessionIsCurrent(session, event.sessionID, snapshot)
   for (const sourceID of agent.contextSourceIDs ?? []) {
@@ -83,7 +87,7 @@ export async function injectContext(event: ContextEvent, snapshot: ActivationSna
     if (!source) continue
     let content: string
     let safePath: string
-    try { safePath = await assertContainedPath(source.architectureDirectory, source.relativePath, `Context source ${sourceID}`) }
+    try { safePath = await assertContainedPath(source.fleetDirectory, source.relativePath, `Context source ${sourceID}`) }
     catch (error) { throw new Error(`Context source ${sourceID} failed containment validation: ${error instanceof Error ? error.message : String(error)}`) }
     try { content = await readFile(safePath, "utf8") }
     catch (error) {

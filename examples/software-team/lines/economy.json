@@ -1,0 +1,12 @@
+{
+  "$schema": "../../../schemas/line-v1.schema.json",
+  "version": 1,
+  "id": "economy",
+  "name": "Economy",
+  "description": "Illustrative lower-cost line for routine passes. The OpenRouter fallback must stay last.",
+  "chain": [
+    { "providerID": "google", "modelID": "gemini-2.0-flash" },
+    { "providerID": "openai", "modelID": "gpt-4.1-mini" },
+    { "providerID": "openrouter", "modelID": "google/gemini-2.0-flash" }
+  ]
+}

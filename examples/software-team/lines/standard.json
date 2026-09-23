@@ -1,0 +1,11 @@
+{
+  "$schema": "../../../schemas/line-v1.schema.json",
+  "version": 1,
+  "id": "standard",
+  "name": "Standard",
+  "description": "Illustrative everyday line for focused implementation work.",
+  "chain": [
+    { "providerID": "anthropic", "modelID": "claude-sonnet-4" },
+    { "providerID": "google", "modelID": "gemini-2.5-pro" }
+  ]
+}

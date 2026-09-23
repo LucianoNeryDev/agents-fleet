@@ -5,14 +5,14 @@ the installed binary.
 
 - `init [directory]` copies the generic example and never overwrites existing
   entries.
-- `validate [directory]` validates every architecture and fleet.
-- `current` prints `architecture/fleet`.
-- `list` prints architectures and nested fleets; `list <architecture>` prints
-  only that architecture's fleets.
-- `show <architecture>` prints its roster; `show <fleet>` uses the active
-  architecture; `show <architecture>/<fleet>` prints route details.
-- `use <fleet|architecture/fleet>` validates and persists a selection, then
-  runs `opencode service restart`. Add `--no-restart` to skip it.
+- `validate [directory]` validates every fleet and line file.
+- `current` prints the active fleet ID.
+- `list` prints fleets and the line each enabled agent binds.
+- `lines` prints the shared line catalog with every resolved chain.
+- `show <fleet>` prints its roster, the lines its agents bind, and the resolved
+  chains; `show <$line>` prints one line's chain and the fleet agents using it.
+- `use <fleet>` validates and persists a selection, then runs
+  `opencode service restart`. Add `--no-restart` to skip it.
 - `doctor [directory]` performs read-only authoring and OpenCode V2 catalog
   diagnostics. Add `--offline` to avoid subprocesses or `--json` for one
   machine-readable report. See [Diagnostics](diagnostics.md).
@@ -28,12 +28,10 @@ cannot complete. Warnings do not make the command fail. `OPENCODE_BIN` applies
 to both restart and doctor, and is always invoked directly without a shell.
 
 Names are colored only for terminals. `NO_COLOR` wins over `FORCE_COLOR`; use
-`FORCE_COLOR=1` or `FORCE_COLOR=0` to override TTY detection. Architecture and
-fleet names are magenta, agents cyan, primaries green, fallbacks yellow, and
-separators dim.
+`FORCE_COLOR=1` or `FORCE_COLOR=0` to override TTY detection. Fleet names are
+magenta, agent IDs cyan, line references blue, primaries green, fallbacks
+yellow, and separators dim.
 
-The bundled initialization contains the `free/free` and
-`software-team/{balanced,budget}` selections. With no state file, `current`
-selects `free/free`; use an explicit selector such as
-`use software-team/budget --no-restart` when choosing the software-team budget
-fleet.
+The bundled initialization contains the `free` and `software-team` fleets. With
+no state file, `current` selects `free`; use an explicit selection such as
+`use software-team --no-restart` when choosing the software-team fleet.

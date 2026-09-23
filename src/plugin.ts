@@ -21,16 +21,16 @@ function promptText(spec: AgentConfig, snapshot: ActivationSnapshot): string | u
 }
 
 function transformAgents(draft: AgentDraft, snapshot: ActivationSnapshot): void {
-  const enabled = Object.entries(snapshot.architecture.agents).filter(([, spec]) => spec.enabled)
+  const enabled = Object.entries(snapshot.fleet.agents).filter(([, spec]) => spec.enabled)
   const missing = enabled.map(([id]) => id).filter((id) => !draft.get(id))
-  if (missing.length) throw new Error(`Architecture ${snapshot.architecture.id} requires missing enabled agent(s): ${missing.join(", ")}`)
+  if (missing.length) throw new Error(`Fleet ${snapshot.fleet.id} requires missing enabled agent(s): ${missing.join(", ")}`)
   for (const id of snapshot.managedAgentIDs) {
-    const spec = snapshot.architecture.agents[id]
+    const spec = snapshot.fleet.agents[id]
     if (spec && !spec.enabled && draft.get(id)) draft.remove(id)
   }
   for (const [id, spec] of enabled) {
-    const chain = snapshot.fleet.chains[spec.routeSlot!]
-    if (!chain) throw new Error(`Agent ${id} has no route chain for slot ${spec.routeSlot}`)
+    const chain = snapshot.chainsByAgent.get(id)
+    if (!chain) throw new Error(`Agent ${id} has no line chain in the active snapshot`)
     draft.update(id, (agent) => {
       agent.model = modelRef(chain[0])
       if (spec.mode !== undefined && spec.mode !== "preserve-static") agent.mode = spec.mode
@@ -41,7 +41,7 @@ function transformAgents(draft: AgentDraft, snapshot: ActivationSnapshot): void 
       if (prompt !== undefined) agent.system = spec.prompt?.mode === "append" && agent.system ? `${agent.system}\n\n${prompt}` : prompt
     })
   }
-  draft.default(snapshot.architecture.defaultAgent)
+  draft.default(snapshot.fleet.defaultAgent)
 }
 
 export function applyAgentTransform(draft: AgentDraft, snapshot: ActivationSnapshot): void { transformAgents(draft, snapshot) }

@@ -4,11 +4,47 @@
   "title": "agents-fleet fleet v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["$schema", "version", "id", "name", "description", "chains"],
+  "required": ["$schema", "version", "id", "name", "description", "defaultAgent", "agents", "contextSources"],
   "properties": {
-    "$schema": { "type": "string", "format": "uri-reference" }, "version": { "const": 1 },
-    "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" }, "name": { "type": "string", "minLength": 1 }, "description": { "type": "string", "minLength": 1 },
-    "chains": { "type": "object", "minProperties": 1, "propertyNames": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" }, "additionalProperties": { "type": "array", "minItems": 1, "items": { "$ref": "model-ref.schema.json" } } },
-    "defaultChain": { "type": "array", "minItems": 1, "items": { "$ref": "model-ref.schema.json" } }
+    "$schema": { "type": "string", "format": "uri-reference" },
+    "version": { "const": 1 },
+    "id": { "$ref": "#/definitions/id" },
+    "name": { "type": "string", "minLength": 1 },
+    "description": { "type": "string", "minLength": 1 },
+    "defaultAgent": { "$ref": "#/definitions/id" },
+    "defaultLine": { "$ref": "#/definitions/lineRef" },
+    "agents": {
+      "type": "object", "minProperties": 1, "propertyNames": { "$ref": "#/definitions/id" }, "additionalProperties": { "$ref": "#/definitions/agent" }
+    },
+    "contextSources": {
+      "type": "object", "propertyNames": { "$ref": "#/definitions/id" }, "additionalProperties": { "$ref": "#/definitions/contextSource" }
+    }
+  },
+  "definitions": {
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+    "lineRef": { "type": "string", "pattern": "^\\$[a-z0-9]+(?:-[a-z0-9]+)*$" },
+    "agent": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["enabled"], "properties": { "enabled": { "const": false } } },
+        { "type": "object", "additionalProperties": false, "required": ["enabled", "line"], "properties": {
+          "enabled": { "const": true }, "line": { "$ref": "#/definitions/lineRef" },
+          "mode": { "enum": ["primary", "subagent", "all", "preserve-static"] },
+          "hidden": { "type": ["boolean", "string"], "enum": [true, false, "preserve-static"] },
+          "description": { "type": "string" }, "steps": { "oneOf": [{ "type": "integer", "exclusiveMinimum": 0 }, { "const": "preserve-static" }] },
+          "prompt": { "$ref": "#/definitions/prompt" },
+          "contextSourceIDs": { "type": "array", "items": { "$ref": "#/definitions/id" }, "uniqueItems": true }
+        } }
+      ]
+    },
+    "prompt": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["mode"], "properties": { "mode": { "const": "preserve-static" } } },
+        { "type": "object", "additionalProperties": false, "required": ["mode", "paths"], "properties": { "mode": { "enum": ["replace", "append"] }, "paths": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 }, "uniqueItems": true } } }
+      ]
+    },
+    "contextSource": {
+      "type": "object", "additionalProperties": false, "required": ["ownerAgentID", "path", "required", "heading", "maxBytes"],
+      "properties": { "ownerAgentID": { "$ref": "#/definitions/id" }, "path": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?![A-Za-z]:[\\\\/])" }, "required": { "type": "boolean" }, "heading": { "type": "string", "minLength": 1 }, "maxBytes": { "type": "integer", "minimum": 1 } }
+    }
   }
 }

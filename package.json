@@ -1,7 +1,7 @@
 {
   "name": "agents-fleet",
   "version": "0.1.0-dev.0",
-  "description": "Validated OpenCode V2 agent architectures and model fleets",
+  "description": "Validated OpenCode V2 agent fleets and shared model lines",
   "type": "module",
   "private": false,
   "license": "MIT",

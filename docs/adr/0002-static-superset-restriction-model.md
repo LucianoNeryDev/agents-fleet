@@ -2,8 +2,8 @@
 
 ## Decision
 
-Architectures may enable or disable agents from OpenCode's pre-existing static
-catalog, but the plugin never dynamically registers agents. Every architecture
+Fleets may enable or disable agents from OpenCode's pre-existing static
+catalog, but the plugin never dynamically registers agents. Every fleet
 explicitly declares the catalog-wide managed union.
 
 ## Rationale
